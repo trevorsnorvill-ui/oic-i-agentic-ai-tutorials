@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import OrchestrateChat from "@/components/watsonx/OrchestrateChat";
+import ProductCatalog from "@/components/catalog/ProductCatalog";
 
 export const Route = createFileRoute("/_layout/")({
   component: Dashboard,
@@ -7,10 +7,8 @@ export const Route = createFileRoute("/_layout/")({
 
 function Dashboard() {
   return (
-    <div className="flex flex-col py-12">
-      <div id="wxo-container" className="flex flex-col py-12">
-        <OrchestrateChat />
-      </div>
+    <div className="py-8">
+      <ProductCatalog />
     </div>
   );
 }
