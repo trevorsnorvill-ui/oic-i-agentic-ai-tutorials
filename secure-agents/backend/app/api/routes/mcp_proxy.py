@@ -1,9 +1,9 @@
 """
 MCP Proxy Route
 
-Forwards product tool calls to the MCP server on behalf of the authenticated user.
-Performs a JWT Bearer token exchange (RFC 8693) so the outgoing token has the
-MCP server's client ID as its audience — satisfying the MCP's JWT verification.
+Forwards product tool calls to the MCP server on behalf of the authenticated user,
+passing the user's IBM Verify access token so the MCP server can obtain scoped
+Vault/MongoDB credentials for that user.
 
 Uses the fastmcp Client which correctly speaks the SSE transport protocol.
 """
@@ -12,13 +12,10 @@ import logging
 import os
 from typing import Any
 
-import requests as _requests
 from fastapi import APIRouter, Header, HTTPException, Query
 from fastmcp import Client
 from fastmcp.client.transports import SSETransport
 from pydantic import BaseModel
-
-from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -30,66 +27,13 @@ MCP_URL = os.environ.get(
 )
 
 
-def _exchange_token_for_mcp(user_token: str) -> str:
-    """
-    Exchange the user's backend-app access token for one whose audience is the
-    agent app (IBM_VERIFY_AGENT_CLIENT_ID).  The MCP server's JWTVerifier checks
-    that the token audience matches JWT_AUDIENCE=<agent client id>.
-
-    Uses the RFC 8693 / IBM Verify JWT Bearer grant:
-      grant_type = urn:ietf:params:oauth:grant-type:jwt-bearer
-      assertion  = <user access token>
-      client_id  = <agent client id>   (no secret needed for public client)
-      scope      = openid
-    """
-    agent_client_id = settings.IBM_VERIFY_AGENT_CLIENT_ID
-    token_url = settings.IBM_VERIFY_TOKEN_URL
-
-    if not agent_client_id or not token_url:
-        logger.warning("IBM_VERIFY_AGENT_CLIENT_ID or TOKEN_URL not set — forwarding token as-is")
-        return user_token
-
-    try:
-        resp = _requests.post(
-            token_url,
-            data={
-                "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
-                "assertion": user_token,
-                "client_id": agent_client_id,
-                "scope": "openid",
-            },
-            timeout=10,
-        )
-    except _requests.exceptions.Timeout:
-        raise HTTPException(status_code=504, detail="IBM Verify token exchange timed out")
-    except _requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=502, detail=f"IBM Verify token exchange failed: {e}")
-
-    if not resp.ok:
-        logger.warning(f"Token exchange failed {resp.status_code}: {resp.text[:300]}")
-        raise HTTPException(
-            status_code=401,
-            detail=f"Token exchange failed ({resp.status_code}): {resp.json().get('error_description', resp.text[:200])}",
-        )
-
-    exchanged = resp.json().get("access_token")
-    if not exchanged:
-        raise HTTPException(status_code=502, detail="Token exchange returned no access_token")
-
-    logger.debug("Token exchange succeeded — using agent-scoped token for MCP call")
-    return exchanged
-
-
 async def _call_mcp_tool(tool: str, args: dict, authorization: str) -> Any:
     """
     Call an MCP tool via the fastmcp Client (SSE transport).
-    The user's token is first exchanged for an agent-scoped token (aud=agent
-    client id) so the MCP server's JWT verifier accepts it.
+    The user's IBM Verify Bearer token is forwarded directly — the MCP server's
+    JWT_AUDIENCE is set to the backend app client ID which is present in the token.
     """
-    # Strip "Bearer " prefix to get the raw token for exchange
-    raw_token = authorization.removeprefix("Bearer ").removeprefix("bearer ").strip()
-    mcp_token = _exchange_token_for_mcp(raw_token)
-    headers = {"Authorization": f"Bearer {mcp_token}"}
+    headers = {"Authorization": authorization}
     transport = SSETransport(f"{MCP_URL}/sse", headers=headers)
 
     try:
