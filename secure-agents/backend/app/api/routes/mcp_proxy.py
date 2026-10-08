@@ -4,14 +4,17 @@ MCP Proxy Route
 Forwards product tool calls to the MCP server on behalf of the authenticated user,
 passing the user's IBM Verify access token so the MCP server can obtain scoped
 Vault/MongoDB credentials for that user.
+
+Uses the fastmcp Client which correctly speaks the SSE transport protocol.
 """
 
 import logging
 import os
-from typing import Any, Optional
+from typing import Any
 
-import requests
 from fastapi import APIRouter, Header, HTTPException, Query
+from fastmcp import Client
+from fastmcp.client.transports import SSETransport
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -24,64 +27,40 @@ MCP_URL = os.environ.get(
 )
 
 
-def _mcp_headers(authorization: str) -> dict:
-    return {
-        "Authorization": authorization,
-        "Content-Type": "application/json",
-        "Accept": "application/json, text/event-stream",
-    }
-
-
-def _call_mcp_tool(tool: str, args: dict, authorization: str) -> Any:
+async def _call_mcp_tool(tool: str, args: dict, authorization: str) -> Any:
     """
-    Call an MCP tool via the MCP server's HTTP+SSE endpoint.
-    FastMCP exposes tools at POST /messages/ with JSON-RPC 2.0 payload.
+    Call an MCP tool via the fastmcp Client (SSE transport).
+    The user's IBM Verify Bearer token is forwarded so the MCP server
+    can verify it and obtain scoped Vault/MongoDB credentials.
     """
-    payload = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "tools/call",
-        "params": {
-            "name": tool,
-            "arguments": args,
-        },
-    }
+    headers = {"Authorization": authorization}
+    transport = SSETransport(f"{MCP_URL}/sse", headers=headers)
 
     try:
-        resp = requests.post(
-            f"{MCP_URL}/messages/",
-            json=payload,
-            headers=_mcp_headers(authorization),
-            timeout=30,
-        )
-    except requests.exceptions.ConnectionError:
-        raise HTTPException(status_code=503, detail="MCP server unreachable")
-    except requests.exceptions.Timeout:
-        raise HTTPException(status_code=504, detail="MCP server timed out")
+        async with Client(transport) as client:
+            result = await client.call_tool(tool, args)
+    except Exception as e:
+        msg = str(e)
+        if "401" in msg or "Unauthorized" in msg:
+            raise HTTPException(
+                status_code=401,
+                detail="MCP server rejected token — ensure your IBM Verify access token is valid",
+            )
+        if "403" in msg or "Forbidden" in msg:
+            raise HTTPException(status_code=403, detail="Insufficient permissions for this operation")
+        if "ConnectionRefusedError" in msg or "ConnectError" in msg:
+            raise HTTPException(status_code=503, detail="MCP server unreachable")
+        raise HTTPException(status_code=502, detail=f"MCP error: {msg[:200]}")
 
-    if resp.status_code == 401:
-        raise HTTPException(status_code=401, detail="MCP server rejected token — ensure your IBM Verify access token is valid")
-    if resp.status_code == 403:
-        raise HTTPException(status_code=403, detail="Insufficient permissions for this operation")
-    if not resp.ok:
-        raise HTTPException(status_code=resp.status_code, detail=f"MCP error: {resp.text[:200]}")
+    # fastmcp returns a list of TextContent / other content items
+    if result and hasattr(result[0], "text"):
+        import json
+        try:
+            return json.loads(result[0].text)
+        except Exception:
+            return result[0].text
 
-    data = resp.json()
-    if "error" in data:
-        raise HTTPException(status_code=400, detail=data["error"].get("message", "MCP tool error"))
-
-    # Unwrap JSON-RPC result → MCP content → actual data
-    result = data.get("result", {})
-    content = result.get("content", [])
-    if content and isinstance(content, list):
-        first = content[0]
-        if first.get("type") == "text":
-            import json
-            try:
-                return json.loads(first["text"])
-            except Exception:
-                return first["text"]
-    return result
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -89,32 +68,32 @@ def _call_mcp_tool(tool: str, args: dict, authorization: str) -> Any:
 # ---------------------------------------------------------------------------
 
 @router.get("/mcp/products")
-def list_products(
+async def list_products(
     limit: int = Query(10, ge=1, le=100),
     authorization: str = Header(...),
 ):
     """List all products — proxied to MCP with the user's JWT."""
-    return _call_mcp_tool("list_products", {"limit": limit}, authorization)
+    return await _call_mcp_tool("list_products", {"limit": limit}, authorization)
 
 
 @router.get("/mcp/products/search")
-def search_products(
+async def search_products(
     name: str = Query(...),
     exact_match: bool = Query(False),
     authorization: str = Header(...),
 ):
     """Search products by name — proxied to MCP with the user's JWT."""
-    return _call_mcp_tool("search_products", {"name": name, "exact_match": exact_match}, authorization)
+    return await _call_mcp_tool("search_products", {"name": name, "exact_match": exact_match}, authorization)
 
 
 @router.get("/mcp/products/sort")
-def sort_products(
+async def sort_products(
     ascending: bool = Query(True),
     limit: int = Query(10, ge=1, le=100),
     authorization: str = Header(...),
 ):
     """Sort products by price — proxied to MCP with the user's JWT."""
-    return _call_mcp_tool("sort_products_by_price", {"ascending": ascending, "limit": limit}, authorization)
+    return await _call_mcp_tool("sort_products_by_price", {"ascending": ascending, "limit": limit}, authorization)
 
 
 class ProductCreate(BaseModel):
@@ -123,12 +102,12 @@ class ProductCreate(BaseModel):
 
 
 @router.post("/mcp/products")
-def create_product(
+async def create_product(
     product: ProductCreate,
     authorization: str = Header(...),
 ):
     """Create a product — proxied to MCP with the user's JWT."""
-    return _call_mcp_tool("create_product", {"product": product.model_dump()}, authorization)
+    return await _call_mcp_tool("create_product", {"product": product.model_dump()}, authorization)
 
 
 class ProductUpdate(BaseModel):
@@ -137,13 +116,13 @@ class ProductUpdate(BaseModel):
 
 
 @router.put("/mcp/products/{product_id}")
-def update_product(
+async def update_product(
     product_id: str,
     product: ProductUpdate,
     authorization: str = Header(...),
 ):
     """Update a product — proxied to MCP with the user's JWT."""
-    return _call_mcp_tool(
+    return await _call_mcp_tool(
         "update_product",
         {"product_id": product_id, "product": product.model_dump()},
         authorization,
@@ -151,9 +130,9 @@ def update_product(
 
 
 @router.delete("/mcp/products/{product_id}")
-def delete_product(
+async def delete_product(
     product_id: str,
     authorization: str = Header(...),
 ):
     """Delete a product — proxied to MCP with the user's JWT."""
-    return _call_mcp_tool("delete_product", {"product_id": product_id}, authorization)
+    return await _call_mcp_tool("delete_product", {"product_id": product_id}, authorization)
