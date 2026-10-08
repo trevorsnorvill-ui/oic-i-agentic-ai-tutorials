@@ -73,6 +73,8 @@ class Settings(BaseSettings):
     IBM_VERIFY_TENANT_ID: str = ""
     IBM_VERIFY_SCOPE: str = "openid profile email"
     IBM_VERIFY_REDIRECT_URI: str = "http://localhost:5173/oauth2callback"
+    # Agent app client ID — used for token exchange so MCP can verify the token audience
+    IBM_VERIFY_AGENT_CLIENT_ID: str = ""
 
     @computed_field  # type: ignore[prop-decorator]
     @property
