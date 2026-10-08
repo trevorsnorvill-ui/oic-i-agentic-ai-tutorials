@@ -23,7 +23,7 @@ router = APIRouter()
 
 MCP_URL = os.environ.get(
     "MCP_INTERNAL_URL",
-    "http://mcp:8001",
+    "http://mcp:8080",
 )
 
 
