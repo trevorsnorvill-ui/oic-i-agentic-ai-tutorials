@@ -17,7 +17,6 @@ import {
   InlineNotification,
   Tag,
   Stack,
-  DataTableSkeleton,
 } from "@carbon/react";
 import { Add, TrashCan, Edit, SortAscending, SortDescending, Renew } from "@carbon/icons-react";
 
