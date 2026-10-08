@@ -17,7 +17,7 @@ import {
   InlineNotification,
   Tag,
   Stack,
-  SkeletonText,
+  DataTableSkeleton,
 } from "@carbon/react";
 import { Add, TrashCan, Edit, SortAscending, SortDescending, Renew } from "@carbon/icons-react";
 
@@ -266,7 +266,7 @@ export default function ProductCatalog() {
                 {loading ? (
                   <TableRow>
                     <TableCell colSpan={4}>
-                      <SkeletonText paragraph lines={4} />
+                      <div className="py-4 text-center text-cds-text-secondary">Loading…</div>
                     </TableCell>
                   </TableRow>
                 ) : tableRows.length === 0 ? (
