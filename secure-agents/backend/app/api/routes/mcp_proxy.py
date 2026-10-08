@@ -52,13 +52,14 @@ async def _call_mcp_tool(tool: str, args: dict, authorization: str) -> Any:
             raise HTTPException(status_code=503, detail="MCP server unreachable")
         raise HTTPException(status_code=502, detail=f"MCP error: {msg[:200]}")
 
-    # fastmcp returns a list of TextContent / other content items
-    if result and hasattr(result[0], "text"):
-        import json
+    # fastmcp Client.call_tool() returns a CallToolResult with a .content list
+    import json
+    content = getattr(result, "content", None) or []
+    if content and hasattr(content[0], "text"):
         try:
-            return json.loads(result[0].text)
+            return json.loads(content[0].text)
         except Exception:
-            return result[0].text
+            return content[0].text
 
     return {}
 
